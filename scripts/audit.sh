@@ -99,5 +99,39 @@ check 'В сайте нет файлов с правом записи для в�
 key_mode=$(sudo stat -c '%a' /etc/ssl/private/devops.key 2>/dev/null) || key_mode='unavailable'
 check 'Права закрытого ключа — 600' '600' "$key_mode"
 
+echo '[5] Контейнеризация'
+if systemctl is-active --quiet docker; then
+    docker_status='active'
+else
+    docker_status='inactive'
+fi
+check 'Docker Engine активен' 'active' "$docker_status"
+
+db_health=$(docker inspect -f '{{.State.Health.Status}}' app-db-1 2>/dev/null) || db_health='unavailable'
+check 'PostgreSQL находится в состоянии healthy' 'healthy' "$db_health"
+
+ports_status=$(ss -tln | awk '
+    NR > 1 && $4 ~ /:(5000|5432)$/ {
+        if ($4 == "127.0.0.1:5000") {
+            app_loopback = 1
+        } else {
+            bad = 1
+        }
+    }
+    END {
+        if (bad) {
+            print "exposed"
+        } else if (!app_loopback) {
+            print "missing loopback"
+        } else {
+            print "loopback only"
+        }
+    }
+')
+check '5000 доступен только с 127.0.0.1, 5432 не опубликован' 'loopback only' "$ports_status"
+
+env_mode=$(stat -c '%a' "$HOME/app/.env" 2>/dev/null) || env_mode='unavailable'
+check 'Права файла .env — 600' '600' "$env_mode"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
