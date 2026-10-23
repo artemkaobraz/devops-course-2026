@@ -32,13 +32,11 @@
 | Учётная запись | Группы | Способ входа |
 | --- | --- | --- |
 | `student` | `student`, `adm`, `cdrom`, `sudo`, `dip`, `plugdev`, `lxd` | Локальная консоль с паролем; SSH запрещён директивой `AllowUsers` |
-| `devops` | `devops`, `sudo`, `users` | SSH по отдельному ключу Ed25519; `sudo` с паролем |
+| `devops` | `devops`, `sudo`, `docker` | SSH по отдельному ключу Ed25519; `sudo` с паролем |
 
 Пароли не хранятся в репозитории. Владелец ВМ хранит их отдельно. На Mac закрытый ключ расположен в `~/.ssh/devops_vm` (права `600`), открытый — в `~/.ssh/devops_vm.pub`. На сервере открытый ключ добавлен в `/home/devops/.ssh/authorized_keys`; права: `700` для `.ssh`, `600` для `authorized_keys`.
 
 В `~/.ssh/config` на Mac настроен псевдоним `devops`: `HostName 127.0.0.1`, `Port 2222`, `User devops`, `IdentityFile ~/.ssh/devops_vm`, `IdentitiesOnly yes`. Для `devops.local` указан тот же ключ и порт. Отпечаток ключа SSH-сервера: `SHA256:aapurb76RMoDZrVPc2klsz6du0ig+mUpQvuWMeNKUeQ` (Ed25519).
-
-Для демонстрации подключения из консоли самой ВМ дополнительно создан отдельный гостевой ключ `~/.ssh/devops_vm_local`. Основной доступ с Mac от этого ключа не зависит.
 
 ## 5. Служба SSH
 
@@ -62,7 +60,7 @@ ClientAliveCountMax 2
 
 ## 6. Правила межсетевого экрана
 
-UFW активен, журналирование — `medium`. Политики: `deny incoming`, `allow outgoing`, маршрутизируемый трафик отключён.
+UFW активен, журналирование — `medium`. Политики: `deny incoming`, `allow outgoing`, `deny routed`. После подготовки Docker в выводе `sudo ufw status verbose` для маршрутизируемого трафика указано `deny`, а не `disabled`.
 
 | Порт | Правило | Назначение |
 | --- | --- | --- |
@@ -81,8 +79,11 @@ UFW активен, журналирование — `medium`. Политики:
 | `01-clean-install` | 22.10.2026 22:26 | Чистая Ubuntu Server, два адаптера, OpenSSH, обновления |
 | `02-keys-configured` | 22.10.2026 22:48 | Пользователь `devops`, ключевой вход, псевдоним SSH на Mac |
 | `03-ssh-hardened` | 22.10.2026 23:46 | SSH на порту 2222, запрет root и пароля, обновлённый проброс |
+| `pre-practice6-safety` | 23.10.2026 19:09 | Страховочный снимок перед практической №6 |
+| `04-nginx-https` | 23.10.2026 19:19 | Nginx и HTTPS настроены; содержимое сайта ещё не доставлено через `rsync` |
 
 UFW и полное доменное имя настроены **после** снимка `03-ssh-hardened`.
+Создание live-снимка `04-nginx-https` зависло. Вместо него ВМ выключили и создали снимок в выключенном состоянии.
 
 ## Восстановление после отката на 01-clean-install
 
@@ -174,3 +175,7 @@ curl --cacert ~/devops.crt -i https://devops.local/unknown-page
 ```
 
 Вторая команда ожидаемо возвращает HTTP 404; тело ответа должно содержать `404 — ресурс не найден`. Проверить редирект HTTP: `curl -I http://devops.local/` (статус 301). На ВМ выполнить `sudo nginx -t`, `sudo systemctl is-active nginx`, `sudo openssl x509 -in /etc/ssl/certs/devops.crt -noout -checkend 2592000` и `sudo stat -c '%a' /etc/ssl/private/devops.key`. Чтобы запустить полный аудит на ВМ, скопировать скрипт с Mac командой `scp -P 2222 scripts/audit.sh devops@devops.local:~/audit.sh` и выполнить там `~/audit.sh`. Для проверки отрицательного случая сертификата без его изменения можно задать большой порог: `CERT_CHECKEND_SECONDS=40000000 ~/audit.sh`; в результате проверка сертификата должна завершиться с `[FAIL]` и ненулевым кодом.
+
+## 9. Подготовка Docker
+
+На ВМ установлен Docker Engine 29.9.2 из официального apt-репозитория Docker. Служба `docker` активна. Пользователь `devops` добавлен в группу `docker`; это даёт доступ, эквивалентный правам root, через Docker daemon. Проверка контейнером `hello-world` успешно выполнена от имени `devops` без `sudo`.
