@@ -47,5 +47,8 @@ if "$dry_run"; then
     exit 0
 fi
 
-curl --cacert "$HOME/devops.crt" -f "$url"
+if ! curl --cacert "$HOME/devops.crt" -fsS "$url"; then
+    echo 'Ошибка: после синхронизации HTTPS-ресурс недоступен.' >&2
+    exit 1
+fi
 printf '\nДеплой ревизии %s завершён.\n' "$revision"
