@@ -81,6 +81,7 @@ UFW активен, журналирование — `medium`. Политики:
 | `03-ssh-hardened` | 22.10.2026 23:46 | SSH на порту 2222, запрет root и пароля, обновлённый проброс |
 | `pre-practice6-safety` | 23.10.2026 19:09 | Страховочный снимок перед практической №6 |
 | `04-nginx-https` | 23.10.2026 19:19 | Nginx и HTTPS настроены; содержимое сайта ещё не доставлено через `rsync` |
+| `05-docker-compose` | 23.10.2026 23:16 | Flask и PostgreSQL запущены через Compose; том `app_db_data` сохранён |
 
 UFW и полное доменное имя настроены **после** снимка `03-ssh-hardened`.
 Создание live-снимка `04-nginx-https` зависло. Вместо него ВМ выключили и создали снимок в выключенном состоянии.
@@ -144,6 +145,14 @@ server {
     index index.html;
     error_page 404 /404.html;
 
+    location /app/ {
+        proxy_pass http://127.0.0.1:5000/;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location / {
         try_files $uri $uri/ =404;
     }
@@ -176,6 +185,30 @@ curl --cacert ~/devops.crt -i https://devops.local/unknown-page
 
 Вторая команда ожидаемо возвращает HTTP 404; тело ответа должно содержать `404 — ресурс не найден`. Проверить редирект HTTP: `curl -I http://devops.local/` (статус 301). На ВМ выполнить `sudo nginx -t`, `sudo systemctl is-active nginx`, `sudo openssl x509 -in /etc/ssl/certs/devops.crt -noout -checkend 2592000` и `sudo stat -c '%a' /etc/ssl/private/devops.key`. Чтобы запустить полный аудит на ВМ, скопировать скрипт с Mac командой `scp -P 2222 scripts/audit.sh devops@devops.local:~/audit.sh` и выполнить там `~/audit.sh`. Для проверки отрицательного случая сертификата без его изменения можно задать большой порог: `CERT_CHECKEND_SECONDS=40000000 ~/audit.sh`; в результате проверка сертификата должна завершиться с `[FAIL]` и ненулевым кодом.
 
-## 9. Подготовка Docker
+## 9. Контейнеризация
 
-На ВМ установлен Docker Engine 29.9.2 из официального apt-репозитория Docker. Служба `docker` активна. Пользователь `devops` добавлен в группу `docker`; это даёт доступ, эквивалентный правам root, через Docker daemon. Проверка контейнером `hello-world` успешно выполнена от имени `devops` без `sudo`.
+Docker Engine 29.9.2 и плагин Compose 5.6.1 установлены на Ubuntu из официального apt-репозитория Docker. Служба `docker` включена и активна. Пользователь `devops` входит в группы `sudo` и `docker`; членство в `docker` даёт права, эквивалентные root, через демон Docker. Проверка без `sudo`: `docker run --rm hello-world`.
+
+Исходный код находится на Mac в `devops-course-2026/app/`, а рабочая копия на сервере — `/home/devops/app/`. Доставка выполняется из корня репозитория командами:
+
+```bash
+rsync -avz --delete --exclude=.env --dry-run app/ devops:app/
+rsync -avz --delete --exclude=.env app/ devops:app/
+```
+
+Параметр `--exclude=.env` обязателен и для сохранения секрета на сервере при `--delete`. Файл `/home/devops/app/.env` принадлежит `devops`, имеет права `600`, хранит случайный пароль PostgreSQL и **не копируется на Mac и не добавляется в Git**. В репозитории есть только `.env.example` с заглушкой; `.gitignore` и `app/.dockerignore` исключают `.env` из Git и контекста образа. При восстановлении скопировать `.env.example` в `.env`, задать права `600` и заменить `POSTGRES_PASSWORD=change_me` случайным значением (`openssl rand -hex 16`). Пароль в документации не записывается.
+
+`app/Dockerfile` собирает образ `devops-app:1.0` на базе `python:3.12-slim` с Flask 3.0.3, psycopg2-binary 2.9.9 и Gunicorn 22.0.0. Код копируется после установки зависимостей для повторного использования кэша. Процесс работает от непривилегированного пользователя `app` (UID 999), слушает порт 5000 внутри контейнера.
+
+`app/docker-compose.yml` поднимает два сервиса: приложение и PostgreSQL `postgres:16-alpine`. База проходит `pg_isready` до запуска приложения (`depends_on: condition: service_healthy`). Внутренняя сеть проекта — `app_backend`; приложение обращается к базе по имени `db` через встроенный DNS Docker и переменную `DB_HOST=db`. Для сервиса `app` задан `dns_search: [.]`, потому что поисковые домены хоста давали внешнее IPv6-разрешение имени `db` командой `getent hosts`.
+
+| Сервис | Публикация на сервере | Данные |
+| --- | --- | --- |
+| `app` | `127.0.0.1:5000:5000` — доступен только с самой ВМ | Код и переменные из образа и `.env` |
+| `db` | Порт `5432` на сервере не опубликован | Именованный том `app_db_data` в `/var/lib/postgresql/data` контейнера |
+
+`docker compose down` удаляет контейнеры и сеть, сохраняя том и счётчик посещений. `docker compose down -v` удаляет также том и данные; эта команда использовалась только для учебной проверки. После проверки проект запущен снова, том существует. При обычном восстановлении **не** использовать `-v`.
+
+В HTTPS-блоке `/etc/nginx/sites-available/devops-site` размещён `location /app/` с `proxy_pass http://127.0.0.1:5000/` и заголовками `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`. Завершающий `/` в `proxy_pass` превращает `/app/health` в `/health`. Конфигурация проверена `sudo nginx -t`, затем выполнен `sudo systemctl reload nginx`. Статический сайт по `/` сохранён. Сертификат проверяется на Mac командой `curl -4 --cacert ~/devops.crt https://devops.local/app/`; флаг `-4` применён из-за задержки `curl` при разрешении имени `.local` по IPv6 на данном Mac.
+
+Для восстановления со снимка `04-nginx-https`: убедиться, что Docker установлен и `devops` входит в `docker`, доставить `app/`, создать только на сервере `.env`, выполнить `cd ~/app && docker compose up -d --build`, добавить блок `/app/` в HTTPS-конфигурацию Nginx, проверить `sudo nginx -t`, перезагрузить Nginx и выполнить `~/audit.sh`. Снимок `05-docker-compose` хранит состояние после задания 2; прокси и расширенный аудит добавлены позднее. Исходные файлы и том удалять нельзя.
