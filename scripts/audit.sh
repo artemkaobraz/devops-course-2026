@@ -57,5 +57,47 @@ check 'Политика входящего трафика — deny' 'deny' "$(aw
 echo '[3] Учётные записи'
 awk -F: '$3 >= 1000 && $3 < 65534 { printf " %s (uid=%s)\n", $1, $3 }' /etc/passwd
 
+echo '[4] Веб-сервер и сертификат'
+if sudo systemctl is-active --quiet nginx; then
+    nginx_status='active'
+else
+    nginx_status='inactive'
+fi
+check 'Nginx активен' 'active' "$nginx_status"
+
+if sudo nginx -t >/dev/null 2>&1; then
+    nginx_config='valid'
+else
+    nginx_config='invalid'
+fi
+check 'Конфигурация Nginx корректна' 'valid' "$nginx_config"
+
+cert_checkend_seconds=${CERT_CHECKEND_SECONDS:-2592000}
+if [[ ! "$cert_checkend_seconds" =~ ^[0-9]+$ ]]; then
+    echo 'CERT_CHECKEND_SECONDS должен быть неотрицательным числом секунд' >&2
+    exit 2
+fi
+if sudo openssl x509 -in /etc/ssl/certs/devops.crt -noout -checkend "$cert_checkend_seconds" >/dev/null 2>&1; then
+    cert_status='valid'
+else
+    cert_status='expired or expiring'
+fi
+check 'Сертификат действителен не менее 30 дней' 'valid' "$cert_status"
+
+if sudo test -d /var/www/devops-site && \
+    world_writable=$(sudo find /var/www/devops-site -type f -perm /0002 -print -quit); then
+    if [[ -z "$world_writable" ]]; then
+        files_status='safe'
+    else
+        files_status="$world_writable"
+    fi
+else
+    files_status='site unavailable'
+fi
+check 'В сайте нет файлов с правом записи для всех' 'safe' "$files_status"
+
+key_mode=$(sudo stat -c '%a' /etc/ssl/private/devops.key 2>/dev/null) || key_mode='unavailable'
+check 'Права закрытого ключа — 600' '600' "$key_mode"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
