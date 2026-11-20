@@ -212,3 +212,33 @@ rsync -avz --delete --exclude=.env app/ devops:app/
 В HTTPS-блоке `/etc/nginx/sites-available/devops-site` размещён `location /app/` с `proxy_pass http://127.0.0.1:5000/` и заголовками `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`. Завершающий `/` в `proxy_pass` превращает `/app/health` в `/health`. Конфигурация проверена `sudo nginx -t`, затем выполнен `sudo systemctl reload nginx`. Статический сайт по `/` сохранён. Сертификат проверяется на Mac командой `curl -4 --cacert ~/devops.crt https://devops.local/app/`; флаг `-4` применён из-за задержки `curl` при разрешении имени `.local` по IPv6 на данном Mac.
 
 Для восстановления со снимка `04-nginx-https`: убедиться, что Docker установлен и `devops` входит в `docker`, доставить `app/`, создать только на сервере `.env`, выполнить `cd ~/app && docker compose up -d --build`, добавить блок `/app/` в HTTPS-конфигурацию Nginx, проверить `sudo nginx -t`, перезагрузить Nginx и выполнить `~/audit.sh`. Снимок `05-docker-compose` хранит состояние после задания 2; прокси и расширенный аудит добавлены позднее. Исходные файлы и том удалять нельзя.
+
+## 10. Ansible
+
+Проект автоматизации находится в каталоге `ansible/` этого репозитория. Управляющий узел — хостовая macOS с Ansible; управляемый узел — VM `devops-vm` с Ubuntu Server 24.04 (ARM64). VM возвращается к снимку `01-clean-install` перед первичным запуском.
+
+В `inventory/bootstrap.ini` задан первый доступ по SSH от `student` на порт 22. После восстановления снимка `01-clean-install` адрес `192.168.56.101` подтверждён командой `ip -brief address`. Поскольку `sshpass` на управляющем узле отсутствовал, открытый ключ заранее установлен для `student` через `ssh-copy-id`; bootstrap использует этот ключ и запрашивает только пароль `sudo`. В `inventory/prod.ini` задан последующий доступ от `devops` по тому же ключу `~/.ssh/devops_vm` и без интерактивного `sudo`. Открытый ключ читается на управляющем узле из `~/.ssh/devops_vm.pub`; ключи и пароли в репозиторий не помещаются.
+
+Роли в `site.yml` выполняются по порядку:
+
+1. `base` проверяет Ubuntu 24.04 и архитектуру, ставит базовые зависимости и Docker Engine из официального репозитория. Архитектура репозитория берётся из `dpkg --print-architecture` на VM.
+2. `ssh` создаёт `devops`, устанавливает открытый ключ и правило `sudo`, затем отключает вход по паролю и настраивает UFW для портов 22 и 80.
+3. `nginx` настраивает HTTP reverse proxy и отключает стандартный сайт. Перед reload обработчик проверяет `nginx -t`.
+4. `app` загружает `ghcr.io/artemkaobraz/devops-ci-app:78d1e1c87e35d260847742e6bd10d6ed2b6da7ff`, запускает контейнер и проверяет `/health`.
+
+Контейнер публикует порт 5000 только на `127.0.0.1` VM. Снаружи приложение доступно через Nginx на порту 80; проверочный URL — `http://192.168.56.101/health` после подтверждения фактического адреса. Версия образа меняется через `app_tag` в `group_vars/all.yml`, а образ загружается до изменения контейнера. При ошибке загрузки уже работающий контейнер остаётся на месте.
+
+Команды выполняются из каталога `ansible/`:
+
+```sh
+ansible-galaxy collection install -r requirements.yml
+ansible-inventory -i inventory/bootstrap.ini --graph
+ansible-playbook -i inventory/bootstrap.ini site.yml --syntax-check
+ansible-playbook -i inventory/bootstrap.ini site.yml --ask-pass --ask-become-pass
+# Если ключ student уже установлен и указан в bootstrap.ini:
+ansible-playbook -i inventory/bootstrap.ini site.yml --ask-become-pass
+ansible-playbook site.yml
+ansible-playbook verify.yml
+```
+
+Последние две команды используют `prod.ini` из `ansible.cfg`: повторный `site.yml` должен завершаться с `changed=0`, а read-only аудит `verify.yml` — с `changed=0` при каждом запуске. Для первого запуска с паролем SSH нужен `sshpass`; вариант с заранее установленным ключом обходится без него. После настройки `devops` пароль не требуется. `force_handlers = True` обеспечивает выполнение уже уведомлённых обработчиков SSH и Nginx даже при отказе поздней задачи.
