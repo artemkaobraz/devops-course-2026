@@ -1,0 +1,6 @@
+---
+app_image: "ghcr.io/artemkaobraz/devops-ci-app"
+app_tag: "78d1e1c87e35d260847742e6bd10d6ed2b6da7ff"
+app_container_name: "devops-ci-app"
+app_host_port: 5000
+app_internal_port: 5000
